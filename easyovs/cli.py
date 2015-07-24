@@ -11,7 +11,7 @@ import sys
 
 from easyovs.bridge_ctrl import br_addflow, br_delbr, br_addbr, br_delflow, \
     br_dump, br_exists,br_list, br_show
-from easyovs.iptables import show_iptables_rules
+from easyovs.iptables import IPtables, show_vm_rules
 from easyovs.log import info, output, error, debug
 from easyovs.neutron import show_port_info
 from easyovs.util import color_str, fmt_flow_str
@@ -44,7 +44,8 @@ class CLI(Cmd):
 
     def __init__(self, bridge=None, stdin=sys.stdin):
         self.prompt = color_str('g', PROMPT_KW)
-        self.bridge = bridge
+        self.bridge = bridge  # default bridge
+        self.ipt = IPtables()
         self.stdin = stdin
         self.in_poller = poll()
         self.in_poller.register(stdin)
@@ -77,11 +78,12 @@ class CLI(Cmd):
             output('br-int addflow priority=3 ip actions=OUTPUT:1\n')
             return
         bridge, flow_str = args[0], ' '.join(args[1:])
-        if not br_exists(bridge) and self.bridge:
-            bridge, flow_str = self.bridge, ' '.join(args)
-        else:
-            output('Please give a valid bridge.\n')
-            return
+        if not br_exists(bridge):
+            if self.bridge:
+                bridge, flow_str = self.bridge, ' '.join(args)
+            else:
+                output('Please give a valid bridge.\n')
+                return
         flow = fmt_flow_str(flow_str)
         if not flow:
             output('Please give a valid flow.\n')
@@ -119,12 +121,11 @@ class CLI(Cmd):
         addbr [bridge]
         create a new bridge with name
         """
-        args = arg.split()
-        if len(args) < 1:
+        brs = arg.replace(',', ' ').split()
+        if len(brs) < 1:
             output('Not enough parameters are given, use like ')
             output('addbr br1,br2\n')
             return
-        brs = ' '.join(args[1:]).replace(',', ' ').split()
         for br in brs:
             br_addbr(br)
 
@@ -133,12 +134,11 @@ class CLI(Cmd):
         delbr [bridge]
         Delete a bridge
         """
-        args = arg.split()
-        if len(args) < 1:
+        brs = arg.replace(',', ' ').split()
+        if len(brs) < 1:
             output('Not enough parameters are given, use like ')
             output('del br1,br2\n')
             return
-        brs = ' '.join(args[1:]).replace(',', ' ').split()
         for br in brs:
             br_delbr(br)
 
@@ -191,11 +191,30 @@ class CLI(Cmd):
         if line is '':
             output(self.helpStr)
 
-    def do_ipt(self, line):
+    def do_ipt(self, arg):
         """
-        Show the iptables rules of a given vm.
+        Show the iptables rules, e.g.,
+        ipt show vm1,vm2
+        ipt show nat,raw,forward
+        ipt check nat,raw,forward
         """
-        show_iptables_rules(line)
+        args = arg.split()
+        if len(args) < 2:
+            error("Not engough paramers, use as:\n")
+            error("ipt show vm_ip1, vm_ip2\n")
+            error("ipt show filter INPUT\n")
+            return
+        if args[0] == 'show':
+            if args[1] in self.ipt.get_available_tables():
+                self.ipt.show(args[1], args[2])
+        elif args[0] == 'check':
+            pass
+        else:
+            error("ipt only support show and check\n")
+            return
+
+        flow_ids = ' '.join(args[1:]).replace(',', ' ').split()
+        show_vm_rules(line)
 
     def do_query(self, line):
         """
