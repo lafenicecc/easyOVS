@@ -134,6 +134,7 @@ class Bridge(object):
     def load_flows(self, db=False):
         """
         Load the OpenvSwitch table rules into self.flows, and to db if enabled.
+        self.flows will be a list of Flow objects
         """
         debug('load_flows():\n')
         cmd = "ovs-ofctl dump-flows %s" % self.bridge
@@ -164,7 +165,7 @@ class Bridge(object):
     @check_exist
     def get_flows(self):
         """
-        Return a dict of flows in the bridge.
+        Return a dict of flows in the bridge in order of table:priority.
         """
         debug('Bridge:get_flow()\n')
         self.load_flows()
@@ -185,17 +186,25 @@ class Bridge(object):
             if table is None or packet is None:
                 return None
             for field in line.split():
-                if field.startswith('priority='):  # priority
+                if field.startswith('priority='):  # match starts with pri
                     priority = get_num_after(field, 'priority=')
                     if priority is None:
+                        error('No priority field found in flow\n')
                         return None
                     match = \
                         field.replace('priority=%u'
                                       % priority, '').lstrip(',').strip()
                     if not match:
                         match = r'*'
+                    port_no = get_num_after(field, 'in_port=')
+                    if isinstance(port_no, int):
+                        intf = self._get_port_intf(port_no)
+                        if intf:
+                            match = \
+                                match.replace('in_port=%u'
+                                              % port_no, 'in_port=%s' % intf)
                 elif field.startswith('actions='):
-                    actions = field.replace('actions=', '').rstrip('\n')
+                    actions = self._process_actions(field)
             if priority is None:  # There is no priority= field
                 match = line.split()[len(line.split()) - 2]
             if len(match) >= 30:
@@ -205,16 +214,65 @@ class Bridge(object):
         else:
             return None
 
+    def dump_flows(self):
+        """
+        Dump out the flows of this bridge
+        :return:
+        """
+        self.load_flows()
+        debug('br_dump: len flows=%u\n' % len(self.flows))
+        table = 0
+        if self.flows:
+            Flow.banner_output()
+            for f in self.flows:
+                if f.table != table:
+                    output('\n')
+                    table = f.table
+                f.fmt_output()
+
+
+    def _process_actions(self, actions_str):
+        """
+        Process the actions fields to make it more readable
+        :param actions_str: input action string
+        :return: The converted string.
+        """
+        actions = actions_str.replace('actions=', '').rstrip('\n')
+        for act in actions_str.split(','):
+            if act.startswith('output:'):
+                port_no = get_num_after(act, 'output:')
+                if isinstance(port_no, int):
+                    intf = self._get_port_intf(port_no)
+                    if intf:
+                        actions = \
+                            actions.replace('output:%u'
+                                            % port_no, 'output:%s' % intf)
+        return actions
+
+    def _get_port_intf(self, port_no):
+        """
+        Get the interface name for the ovs port id in the bridge.
+        :param port_no: int number of ovs port
+        :return: the interface name or None
+        """
+        if not port_no:
+            return None
+        ovs_ports = self.get_ports()
+        for intf in ovs_ports:
+            if ovs_ports[intf].get('port') == str(port_no):
+                return intf
+        return None
+
     @check_exist
     def get_ports(self):
         """
         Return a dict of the ports (port, addr, tag, type) on the bridge, like
         {
             'qvoxxx':{
-                'port':2,
-                'addr':08:91:ff:ff:f3,
-                'vlan':1,
-                'type':internal,
+                'port':'2',
+                'addr':'08:91:ff:ff:f3',
+                'vlan':'1',
+                'type':'internal',
             }
         }
         """
