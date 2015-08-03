@@ -58,7 +58,7 @@ class Bridge(object):
             return True
 
     @check_exist
-    def del_flow(self, flow_ids):
+    def del_flow(self, flow_ids, forced=False):
         """
         Return True or False to del a flow from given list.
         """
@@ -78,27 +78,30 @@ class Bridge(object):
                 continue
             else:
                 del_flow = self.flows[flow_id]
-                Flow.banner_output()
-                del_flow.fmt_output()
-                output('Del the flow? [Y/n]: ')
-                new = termios.tcgetattr(fd)
-                new[3] = new[3] & ~termios.ICANON
-                try:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, new)
-                    while True:
-                        in_ch = sys.stdin.read(1)
-                        if in_ch == 'n' or in_ch == 'N':
-                            output('\tCancel the deletion.\n')
-                            break
-                        elif in_ch == 'y' or in_ch == 'Y' or in_ch != '\n':
-                            del_flows.append(del_flow)
-                            output('\n')
-                            break
-                        else:
-                            output('\nWrong, please input [Y/n]: ')
-                            continue
-                finally:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                if forced:
+                    del_flows.append(del_flow)
+                else:
+                    Flow.banner_output()
+                    del_flow.fmt_output()
+                    output('Del the flow? [Y/n]: ')
+                    new = termios.tcgetattr(fd)
+                    new[3] = new[3] & ~termios.ICANON
+                    try:
+                        termios.tcsetattr(fd, termios.TCSADRAIN, new)
+                        while True:
+                            in_ch = sys.stdin.read(1)
+                            if in_ch == 'n' or in_ch == 'N':
+                                output('\tCancel the deletion.\n')
+                                break
+                            elif in_ch == 'y' or in_ch == 'Y' or in_ch != '\n':
+                                del_flows.append(del_flow)
+                                output('\n')
+                                break
+                            else:
+                                output('\nWrong, please input [Y/n]: ')
+                                continue
+                    finally:
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old)
         if not del_flows:
             return False
         self.load_flows(True)
@@ -116,7 +119,6 @@ class Bridge(object):
                                or m.startswith("actions=")), del_matches)
                     del_cmd = "ovs-ofctl --strict del-flows %s %s" \
                               % (self.bridge, ','.join(del_matches))
-                    output(del_cmd + '\n')
                     err = Popen(del_cmd, stdout=PIPE, stderr=PIPE,
                                 shell=True).communicate()[1]
                     if err:
@@ -183,15 +185,23 @@ class Bridge(object):
             if table is None or packet is None:
                 return None
             for field in line.split():
-                if field.startswith('priority='):  # priority
+                if field.startswith('priority='):  # match starts with pri
                     priority = get_num_after(field, 'priority=')
                     if priority is None:
+                        error('No priority field found in flow\n')
                         return None
                     match = \
                         field.replace('priority=%u'
                                       % priority, '').lstrip(',').strip()
                     if not match:
                         match = r'*'
+                    port_no = get_num_after(field, 'in_port=')
+                    if isinstance(port_no, int):
+                        intf = self._get_port_intf(port_no)
+                        if intf:
+                            match = \
+                                match.replace('in_port=%u'
+                                              % port_no, 'in_port=%s' % intf)
                 elif field.startswith('actions='):
                     actions = field.replace('actions=', '').rstrip('\n')
             if priority is None:  # There is no priority= field
@@ -203,16 +213,30 @@ class Bridge(object):
         else:
             return None
 
+    def _get_port_intf(self, port_no):
+        """
+        Get the interface name for the ovs port id in the bridge.
+        :param port_no: int number of ovs port
+        :return: the interface name or None
+        """
+        if not port_no:
+            return None
+        ovs_ports = self.get_ports()
+        for intf in ovs_ports:
+            if ovs_ports[intf].get('port') == str(port_no):
+                return intf
+        return None
+
     @check_exist
     def get_ports(self):
         """
         Return a dict of the ports (port, addr, tag, type) on the bridge, like
         {
             'qvoxxx':{
-                'port':2,
-                'addr':08:91:ff:ff:f3,
-                'vlan':1,
-                'type':internal,
+                'port':'2',
+                'addr':'08:91:ff:ff:f3',
+                'vlan':'1',
+                'type':'internal',
             }
         }
         """
